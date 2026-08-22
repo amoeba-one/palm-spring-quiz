@@ -204,7 +204,7 @@ function renderSetup(){
        <span>${S.done.includes(i)?`<button onclick="editScores(${i})">Edit scores</button> `:""}
        <button ${S.teams.length?"":"disabled"} onclick="startRound(${i})">${S.done.includes(i)?"Revisit":"Start"}</button></span>
      </div>`).join("")}
-    <p class="muted">Jokers: a team plays it by writing "J" in the Joker box at the top of the sheet — you tick it when entering scores and that round's score doubles. Once per team; any unused joker is auto-applied on the last round entered.</p>
+    <p class="muted">Jokers: a team plays it by ticking the Joker box at the top of the sheet — you tick it when entering scores and that round's score doubles. Once per team; any unused joker is auto-applied on the last round entered.</p>
   </div>`;
 }
 function addTeam(){ const el=document.getElementById("newteam"); const v=el.value.trim();
@@ -244,7 +244,7 @@ function renderRules(){
     <ul>
       <li>Every team gets <strong>one Joker</strong> for the night.</li>
       <li>Play it and your score for that round is <strong>doubled</strong>. Save it for a round you feel good about!</li>
-      <li>To play it, write <strong>"J" in the Joker box at the top</strong> of your answer sheet before you hand it in.</li>
+      <li>To play it, <strong>tick the Joker box at the top</strong> of your answer sheet before you hand it in.</li>
       <li>You can only use it <strong>once</strong>. If you never use it, it's applied to the last round automatically.</li>
     </ul>
     <h2>✅ Marking</h2>
@@ -413,7 +413,7 @@ function renderScoreEntry(){
     <h2>Enter scores — ${R.name}</h2>
     <p class="muted">${R.type==="allornothing"
       ? "Something or Nothing: teams answer as many or as few as they like — 2 pts per correct answer, but any wrong answer means 0 for the round. Enter the final round score (0–10)."
-      : `Max ${maxPts} points. Tick Joker if the team wrote it on this round's sheet (doubles the score, once per quiz).`}</p>
+      : `Max ${maxPts} points. Tick Joker if the team ticked the Joker box on this round's sheet (doubles the score, once per quiz).`}</p>
     <table><tr><th>Team</th><th>Score</th><th>Joker</th></tr>
     ${S.teams.map((t,i)=>{
       const jUsedElsewhere = S.jokers[t]!=null && S.jokers[t]!==r;
@@ -455,20 +455,21 @@ function renderBoard(){
   const showDelta = r!=null && S.scores[r];
   app.innerHTML = topbar("Leaderboard") + `
   <div class="card">
-    <h1>🏆 Leaderboard${showDelta?` <span class="pill">after ${ROUNDS[r].name}</span>`:""}</h1>
+    <h1>Leaderboard${showDelta?` <span class="pill">after ${ROUNDS[r].name}</span>`:""}</h1>
     <table><tr><th>#</th><th>Team</th>${showDelta?"<th>This round</th>":""}<th>Total</th></tr>
     ${rows.map(x=>{
       const delta = showDelta? roundScore(x.team,r) : null;
       const jr = S.jokers[x.team];
-      return `<tr class="${x.pos===1?"rank1":""}"><td class="pos">${x.pos===1?"🥇":x.pos===2?"🥈":x.pos===3?"🥉":x.pos}</td>
-        <td>${esc(x.team)}${jr!=null?` <span class="pill joker">JOKER R${jr+1}</span>`:""}</td>
-        ${showDelta?`<td class="delta">${delta!=null?"+"+delta:"—"}</td>`:""}
+      const jokerNow = showDelta && jr===r;
+      return `<tr class="${x.pos===1?"rank1":""}"><td class="pos">${x.pos}</td>
+        <td>${esc(x.team)}${jokerNow?` <span class="pill joker">JOKER PLAYED</span>`:jr!=null?` <span class="pill">joker used R${jr+1}</span>`:""}</td>
+        ${showDelta?`<td class="delta">${delta!=null?"+"+delta+(jokerNow?` <span class="pill joker">×2</span>`:""):"—"}</td>`:""}
         <td><strong>${x.total}</strong></td></tr>`;
     }).join("")}</table>
     ${rows.length?"":'<p class="muted">No teams yet.</p>'}
     <div class="row" style="margin-top:14px">
       <button class="primary big" onclick="goSetup()">Rounds & setup</button>
-      ${S.done.length===ROUNDS.length?'<h2 style="margin-left:10px">🎉 Final standings!</h2>':""}
+      ${S.done.length===ROUNDS.length?'<h2 style="margin-left:10px">Final standings!</h2>':""}
     </div>
   </div>`;
 }
