@@ -1,3 +1,10 @@
 *
-!index.html
 !.gitignore
+!index.html
+!clips.js
+!README.md
+!supabase/
+!supabase/*.sql
+!docs/
+!docs/**/
+!docs/**/*.md
