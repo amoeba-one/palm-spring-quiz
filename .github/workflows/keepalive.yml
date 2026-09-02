@@ -1,0 +1,13 @@
+# Supabase free projects pause after 7 days without traffic. One read every 3 days keeps it awake.
+name: Keep Supabase awake
+on:
+  schedule:
+    - cron: "0 3 */3 * *"
+  workflow_dispatch:
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -sf "https://lkqyycjzfszehiqwdjon.supabase.co/rest/v1/quizzes?select=id&limit=1" \
+            -H "apikey: sb_publishable_8YO8hCczgwQ8yFBVDlKwng_FDocK709"
