@@ -84,12 +84,15 @@ most quizzes.
 
 Clips live in a public-read Supabase Storage bucket `clips`, one object per
 question at `<quizId>/<uuid>.<ext>`, and the object path is stored as the
-question's fourth element (`[q, a, opts|null, clipPath]`). Uploads and deletes
+question's fourth element (`[q, a, opts|null, clipPath, [start, end]?]`).
+The optional fifth element trims playback to a range in seconds (`end` may be
+null for "to the end"); the file itself is never re-encoded. Uploads and deletes
 go through the `clip` edge function, which checks the password via `check_pw`
 and then uses the service-role key. Anonymous direct writes to the bucket are
 blocked by storage RLS.
 
-Editor: music-round questions get an upload control; chosen files are staged
+Editor: music-round questions get an upload control and a trimmer (preview
+player, start/end fields, "start here"/"end here" buttons, range preview); chosen files are staged
 and uploaded when Save is pressed (so a cancelled edit uploads nothing), then
 the quiz row is saved with the new paths. Removed or replaced clips are deleted
 after a successful save. Deleting a quiz deletes its folder. Play: the player

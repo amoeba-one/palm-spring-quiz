@@ -60,6 +60,9 @@
   .q .optbtn{grid-column:2/4;display:flex;gap:8px}
   .linkbtn{background:none;color:var(--blue);padding:4px 6px;font-size:.9rem}
   .q .clip{align-items:center;flex-wrap:wrap}
+  .q .trim{grid-column:2/4;background:var(--bg);border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:6px}
+  .q .trim audio{width:100%;height:32px}
+  .q .trim input[type=number]{width:80px;padding:6px 8px}
   .mini{padding:6px 10px;font-size:.85rem}
   .roundcard{border-left:4px solid var(--blue)}
   .err{color:var(--red);margin-top:8px}
@@ -285,7 +288,7 @@ function alertErr(e){ const m=document.getElementById("modal");
   m.innerHTML=`<div class="overlay"><div class="card"><h2>Something went wrong</h2><div class="err">${esc(e.message||e)}</div><button style="margin-top:12px" onclick="document.getElementById('modal').innerHTML=''">Close</button></div></div>`; }
 
 /* ---------------- editor ---------------- */
-const editorState=quiz=>({quiz,dirty:false,pending:{},removed:[]}); // pending: "ri.qi" -> File to upload on save; removed: clip paths to delete on save
+const editorState=quiz=>({quiz,dirty:false,pending:{},pendingUrl:{},removed:[]}); // pending: "ri.qi" -> File to upload on save; removed: clip paths to delete on save
 const blankRound=n=>({name:`Round ${n}`,type:"normal",ptsPerQ:1,allOrNothing:false,questions:[["",""]]});
 function renderEditor(){
   const q=E.quiz;
@@ -313,14 +316,24 @@ function renderEditor(){
     <div class="card row spread"><button onclick="addRound()">+ Add round</button><button class="primary big" onclick="editorSave()" ${E.saving?"disabled":""}>${E.saving||"Save quiz"}</button></div>`;
   app.querySelectorAll("textarea").forEach(autoGrow);
 }
-function questionEditorHTML(r,ri,[qq,aa,opts,clip],qi){
-  const P=`rounds.${ri}.questions.${qi}`;
-  const pend=E.pending[`${ri}.${qi}`];
+function questionEditorHTML(r,ri,[qq,aa,opts,clip,trim],qi){
+  const P=`rounds.${ri}.questions.${qi}`, key=`${ri}.${qi}`;
+  const pend=E.pending[key], src=pend?E.pendingUrl[key]:clip?clipUrl(clip):null;
+  const [start,end]=trim||[0,null];
   const clipHTML = r.type!=="music" ? "" : `<div class="optbtn clip">
-      ${pend ? `<span class="pill" style="background:#173226;color:var(--green)">${esc(pend.name)} — uploads on save</span>`
-        : clip ? `<audio controls preload="none" src="${clipUrl(clip)}" style="height:32px"></audio>` : `<span class="muted">No clip yet</span>`}
-      <label class="linkbtn" style="cursor:pointer">${clip||pend?"Replace clip":"+ Upload clip"}<input type="file" accept="audio/*" hidden onchange="stageClip(${ri},${qi},this.files[0])"></label>
-      ${clip||pend?`<button class="linkbtn" onclick="unstageClip(${ri},${qi})">remove</button>`:""}</div>`;
+      ${pend ? `<span class="pill" style="background:#173226;color:var(--green)">${esc(pend.name)} — uploads on save</span>` : clip ? "" : `<span class="muted">No clip yet</span>`}
+      <label class="linkbtn" style="cursor:pointer">${src?"Replace clip":"+ Upload clip"}<input type="file" accept="audio/*" hidden onchange="stageClip(${ri},${qi},this.files[0])"></label>
+      ${src?`<button class="linkbtn" onclick="unstageClip(${ri},${qi})">remove</button>`:""}</div>
+    ${src?`<div class="trim">
+      <audio id="trim-${key}" controls preload="metadata" src="${src}"></audio>
+      <div class="row" style="gap:6px">
+        <button class="mini" onclick="setTrim(${ri},${qi},0,trimAudio('${key}').currentTime)">Start here</button>
+        <input type="number" min="0" step="0.5" value="${start}" oninput="setTrim(${ri},${qi},0,this.value,true)"> →
+        <input type="number" min="0" step="0.5" value="${end??""}" placeholder="end" oninput="setTrim(${ri},${qi},1,this.value,true)">
+        <button class="mini" onclick="setTrim(${ri},${qi},1,trimAudio('${key}').currentTime)">End here</button>
+        <button class="mini primary" onclick="previewTrim('${key}',${start},${end??"null"})">▶ Preview</button>
+        <span class="muted" style="font-size:.85rem">${end!=null?`${fmtSec(end-start)} clip`:"whole file"}</span>
+      </div></div>`:""}`;
   const optsHTML = opts ? `<div class="opts">${opts.map((o,oi)=>`<label class="opt"><b>${LETTERS[oi]})</b><input type="text" data-p="${P}.2.${oi}" value="${esc(o)}" placeholder="Option ${LETTERS[oi]}"></label>`).join("")}</div>
       <div class="optbtn"><button class="linkbtn" onclick="addOpt(${ri},${qi})" ${opts.length>=LETTERS.length?"disabled":""}>+ option</button><button class="linkbtn" onclick="clearOpts(${ri},${qi})">remove options</button></div>`
     : `<div class="optbtn"><button class="linkbtn" onclick="addOpts(${ri},${qi})">+ Multiple choice options</button></div>`;
@@ -332,10 +345,27 @@ function questionEditorHTML(r,ri,[qq,aa,opts,clip],qi){
 }
 function stageClip(ri,qi,file){
   if(!file) return;
-  if(file.size>CLIP_MAX_MB*1048576){ E.error=`${file.name} is over ${CLIP_MAX_MB} MB — trim it to the part you'll play.`; render(); return; }
-  E.pending[`${ri}.${qi}`]=file; E.dirty=true; render();
+  if(file.size>CLIP_MAX_MB*1048576){ E.error=`${file.name} is over ${CLIP_MAX_MB} MB.`; render(); return; }
+  const key=`${ri}.${qi}`; E.pending[key]=file; E.pendingUrl[key]=URL.createObjectURL(file);
+  E.quiz.rounds[ri].questions[qi].length=Math.min(E.quiz.rounds[ri].questions[qi].length,4); // new file: reset trim
+  E.dirty=true; render();
 }
-function unstageClip(ri,qi){ delete E.pending[`${ri}.${qi}`]; const q=E.quiz.rounds[ri].questions[qi]; if(q[3]){ E.removed.push(q[3]); q.length=q[2]?3:2; } E.dirty=true; render(); }
+function unstageClip(ri,qi){ const key=`${ri}.${qi}`; delete E.pending[key]; delete E.pendingUrl[key]; const q=E.quiz.rounds[ri].questions[qi]; if(q[3]) E.removed.push(q[3]); q.length=q[2]?3:2; E.dirty=true; render(); }
+const trimAudio=key=>document.getElementById("trim-"+key);
+const fmtSec=t=>`${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,"0")}`;
+// which: 0=start, 1=end. Typed values don't re-render (keeps focus); button-set values do.
+function setTrim(ri,qi,which,val,typed){
+  const q=E.quiz.rounds[ri].questions[qi]; if(q.length<3) q[2]=null;
+  const t=q[4]||[0,null]; const v=val===""?null:Math.max(0,Math.round(+val*2)/2);
+  t[which]= which===0 ? (v||0) : v;
+  if(t[1]!=null && t[1]<=t[0]) t[1]=null;
+  q[4]=t; E.dirty=true; if(!typed) render();
+}
+function previewTrim(key,start,end){
+  const a=trimAudio(key); if(!a) return;
+  a.currentTime=start; a.play();
+  a.ontimeupdate=()=>{ if(end!=null && a.currentTime>=end){ a.pause(); a.ontimeupdate=null; } };
+}
 function addOpts(ri,qi){ E.quiz.rounds[ri].questions[qi][2]=["","","",""]; E.dirty=true; render(); }
 function addOpt(ri,qi){ E.quiz.rounds[ri].questions[qi][2].push(""); E.dirty=true; render(); }
 function clearOpts(ri,qi){ const q=E.quiz.rounds[ri].questions[qi]; if(q[3]) q[2]=null; else q.length=2; E.dirty=true; render(); }
@@ -353,7 +383,7 @@ app.addEventListener("input",ev=>{
 function addRound(){ E.quiz.rounds.push(blankRound(E.quiz.rounds.length+1)); E.dirty=true; render(); }
 function delRound(i){ E.quiz.rounds[i].questions.forEach(q=>{ if(q[3]) E.removed.push(q[3]); }); E.quiz.rounds.splice(i,1); remapPending(k=>{ const [ri,qi]=k.split(".").map(Number); return ri===i?null:ri>i?`${ri-1}.${qi}`:k; }); E.dirty=true; render(); }
 function moveRound(i,d){ const r=E.quiz.rounds; [r[i],r[i+d]]=[r[i+d],r[i]]; remapPending(k=>{ const [ri,qi]=k.split(".").map(Number); return ri===i?`${i+d}.${qi}`:ri===i+d?`${i}.${qi}`:k; }); E.dirty=true; render(); }
-function remapPending(f){ const out={}; for(const [k,v] of Object.entries(E.pending)){ const nk=f(k); if(nk) out[nk]=v; } E.pending=out; }
+function remapPending(f){ const out={},urls={}; for(const [k,v] of Object.entries(E.pending)){ const nk=f(k); if(nk){ out[nk]=v; urls[nk]=E.pendingUrl[k]; } } E.pending=out; E.pendingUrl=urls; }
 function addQ(ri){ E.quiz.rounds[ri].questions.push(["",""]); E.dirty=true; render(); app.querySelectorAll(`[data-p^="rounds.${ri}.questions."]`)[ (E.quiz.rounds[ri].questions.length-1)*2 ]?.focus(); }
 function delQ(ri,qi){ const q=E.quiz.rounds[ri].questions; if(q[qi][3]) E.removed.push(q[qi][3]); q.splice(qi,1); remapPending(k=>{ const [r,i]=k.split(".").map(Number); return r!==ri?k:i===qi?null:i>qi?`${r}.${i-1}`:k; }); E.dirty=true; render(); }
 function moveQ(ri,qi,d){ const q=E.quiz.rounds[ri].questions; [q[qi],q[qi+d]]=[q[qi+d],q[qi]]; remapPending(k=>{ const [r,i]=k.split(".").map(Number); return r!==ri?k:i===qi?`${r}.${qi+d}`:i===qi+d?`${r}.${qi}`:k; }); E.dirty=true; render(); }
@@ -374,7 +404,7 @@ function validateQuiz(q){
 async function editorSave(){
   const q=E.quiz; E.error=validateQuiz(q);
   if(E.error){ render(); return; }
-  q.title=q.title.trim(); q.rounds.forEach(r=>{ r.name=r.name.trim(); r.questions=r.questions.map(([a,b,o,c])=>{ const out=[a.trim(),b.trim()]; if(o||c) out[2]=o?o.map(x=>x.trim()):null; if(c) out[3]=c; return out; }); });
+  q.title=q.title.trim(); q.rounds.forEach(r=>{ r.name=r.name.trim(); r.questions=r.questions.map(([a,b,o,c,t])=>{ const out=[a.trim(),b.trim()]; if(o||c) out[2]=o?o.map(x=>x.trim()):null; if(c){ out[3]=c; if(t&&(t[0]>0||t[1]!=null)) out[4]=t; } return out; }); });
   E.saving=true; render();
   try{
     const jobs=Object.entries(E.pending);
@@ -386,7 +416,7 @@ async function editorSave(){
       if(!res){ E.saving=false; render(); return; }   // password prompt cancelled
       if(qn[3]) E.removed.push(qn[3]);
       if(qn.length<3) qn[2]=null;
-      qn[3]=res.data.path; delete E.pending[key];
+      qn[3]=res.data.path; delete E.pending[key]; delete E.pendingUrl[key];
     }
     E.saving="Saving…"; render();
     const saved=await saveQuiz(q);
@@ -595,6 +625,7 @@ function loadAllClips(files){
   render();
 }
 function loadOneClip(i,files){ if(files[0]){ musicFiles[i]=URL.createObjectURL(files[0]); render(); } }
+function clipRange(i){ const t=ROUNDS()[S.round].questions[i][4]; return musicFiles[i]?[0,null]:(t||[0,null]); }
 function musicPlayerHTML(i){
   const src = clipSrc(i);
   if(!src) return `<div class="row"><span class="muted">No clip available — load manually:</span>
@@ -607,16 +638,17 @@ function musicPlayerHTML(i){
     </div>
     <div class="progress" style="margin-top:10px"><div id="playbar" style="width:0%;background:var(--green)"></div></div>`;
 }
-function togglePlay(){ const a=document.getElementById("clip"); if(!a) return; a.paused ? a.play() : a.pause(); }
-function restartClip(){ const a=document.getElementById("clip"); if(!a) return; a.currentTime=0; a.play(); }
+function togglePlay(){ const a=document.getElementById("clip"); if(!a) return; if(a.paused){ const [s,e]=clipRange(S.q); if(a.currentTime<s||(e!=null&&a.currentTime>=e)) a.currentTime=s; a.play(); } else a.pause(); }
+function restartClip(){ const a=document.getElementById("clip"); if(!a) return; a.currentTime=clipRange(S.q)[0]; a.play(); }
 function updatePlayUI(){
   const a=document.getElementById("clip"), b=document.getElementById("playbtn"), p=document.getElementById("playpos"), bar=document.getElementById("playbar");
   if(!a||!b) return;
-  const ended = a.ended || (a.duration && a.currentTime>=a.duration-0.05);
-  b.textContent = !a.paused ? "⏸ Pause" : ended ? "▶ Play again" : a.currentTime>0 ? "▶ Resume" : "▶ Play clip";
-  const f=t=>isFinite(t)?`${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,"0")}`:"0:00";
-  p.textContent = `${f(a.currentTime)} / ${f(a.duration)}`;
-  bar.style.width = a.duration ? (a.currentTime/a.duration*100)+"%" : "0%";
+  const [s,e]=clipRange(S.q), end=e??a.duration, len=end-s;
+  if(e!=null && !a.paused && a.currentTime>=e) a.pause();
+  const pos=Math.max(0,a.currentTime-s), ended = a.ended || (isFinite(end) && a.currentTime>=end-0.05);
+  b.textContent = !a.paused ? "⏸ Pause" : ended ? "▶ Play again" : pos>0 ? "▶ Resume" : "▶ Play clip";
+  p.textContent = `${fmtSec(pos)} / ${isFinite(len)?fmtSec(len):"0:00"}`;
+  bar.style.width = len>0 ? Math.min(100,pos/len*100)+"%" : "0%";
 }
 
 /* ---------------- score entry ---------------- */
