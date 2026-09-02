@@ -11,3 +11,6 @@
 !.github/
 !.github/**/
 !.github/**/*.yml
+!supabase/**/
+!supabase/**/*.ts
+!supabase/config.toml

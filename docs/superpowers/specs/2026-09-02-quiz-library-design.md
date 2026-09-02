@@ -6,8 +6,7 @@ Date: 2026-09-02
 
 Turn the single hardcoded Palm Spring quiz into a library of quizzes that anyone
 can play and that password holders can create and edit. Quizzes live in a shared
-Supabase database so they are the same on every device. The app stays plain HTML with no build step: `index.html` plus
-`clips.js` (the seeded quiz's embedded audio, split out so the page is editable), hosted on GitHub Pages.
+Supabase database so they are the same on every device. The app stays a single `index.html` with no build step, hosted on GitHub Pages.
 
 ## Access model
 
@@ -83,10 +82,19 @@ most quizzes.
 
 ## Music rounds
 
-The seeded quiz keeps its ten embedded clips, matched by quiz id. Any other
-music round uses the existing "load clips from files" control at round intro,
-which assigns files to questions in name order for the session. Storing clips
-in Supabase Storage is a possible follow-up and is out of scope.
+Clips live in a public-read Supabase Storage bucket `clips`, one object per
+question at `<quizId>/<uuid>.<ext>`, and the object path is stored as the
+question's fourth element (`[q, a, opts|null, clipPath]`). Uploads and deletes
+go through the `clip` edge function, which checks the password via `check_pw`
+and then uses the service-role key. Anonymous direct writes to the bucket are
+blocked by storage RLS.
+
+Editor: music-round questions get an upload control; chosen files are staged
+and uploaded when Save is pressed (so a cancelled edit uploads nothing), then
+the quiz row is saved with the new paths. Removed or replaced clips are deleted
+after a successful save. Deleting a quiz deletes its folder. Play: the player
+uses the public object URL; the "load from files" override remains for
+last-minute swaps.
 
 ## Supabase client
 

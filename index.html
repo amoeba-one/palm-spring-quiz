@@ -59,6 +59,7 @@
   .q .opt input{flex:1;min-width:0}
   .q .optbtn{grid-column:2/4;display:flex;gap:8px}
   .linkbtn{background:none;color:var(--blue);padding:4px 6px;font-size:.9rem}
+  .q .clip{align-items:center;flex-wrap:wrap}
   .mini{padding:6px 10px;font-size:.85rem}
   .roundcard{border-left:4px solid var(--blue)}
   .err{color:var(--red);margin-top:8px}
@@ -72,14 +73,14 @@
 <body>
 <div class="wrap" id="app"></div>
 <div id="modal"></div>
-<script src="clips.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.58.0/dist/umd/supabase.min.js"></script>
 <script>
 "use strict";
 /* ---------------- backend ---------------- */
 const SUPABASE_URL="https://lkqyycjzfszehiqwdjon.supabase.co";
 const SUPABASE_KEY="sb_publishable_8YO8hCczgwQ8yFBVDlKwng_FDocK709";
-const SEED_QUIZ_ID="a0000000-0000-4000-8000-000000000001"; // the quiz whose music clips ship in clips.js
+const CLIP_FN=SUPABASE_URL+"/functions/v1/clip";
+const CLIP_MAX_MB=25;
 const db=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
 const TIMERS = {question:15, marking:180, picture:300};
 const LETTERS="ABCDEF";
@@ -98,6 +99,20 @@ async function saveQuiz(quiz){
 }
 async function deleteQuiz(id){
   return withPassword(pw=>db.rpc("delete_quiz",{pw,qid:id}));
+}
+// Edge function calls return the same {data,error} shape as supabase-js so withPassword can retry on a bad password.
+async function clipRequest(method,body,headers={}){
+  const res=await fetch(CLIP_FN,{method,body,headers:{apikey:SUPABASE_KEY,...headers}});
+  const out=await res.json().catch(()=>({}));
+  if(res.status===401) return {data:null,error:{code:"28000",message:out.error}};
+  if(!res.ok) return {data:null,error:{message:out.error||res.statusText}};
+  return {data:out,error:null};
+}
+function uploadClip(path,file){
+  return withPassword(pw=>{ const f=new FormData(); f.append("pw",pw); f.append("path",path); f.append("file",file,file.name); return clipRequest("POST",f); });
+}
+function deleteClips(body){
+  return withPassword(pw=>clipRequest("DELETE",JSON.stringify({pw,...body}),{"Content-Type":"application/json"}));
 }
 // Runs fn with the stored password; on rejection clears it and prompts. Resolves to {data}, or null if the prompt was cancelled.
 async function withPassword(fn){
@@ -144,9 +159,9 @@ function save(){
 const ROUNDS=()=>QUIZ.rounds;
 const hasJokers=()=>QUIZ.jokers!==false;
 
-const EMBEDDED_CLIPS=window.EMBEDDED_CLIPS||[];
-let musicFiles = {}; // qIdx -> object URL (manual override only)
-function clipSrc(i){ return musicFiles[i] || (QUIZ.id===SEED_QUIZ_ID && EMBEDDED_CLIPS[i]) || null; }
+let musicFiles = {}; // qIdx -> object URL (manual override, this session only)
+const clipUrl=path=>`${SUPABASE_URL}/storage/v1/object/public/clips/${path}`;
+function clipSrc(i){ const path=ROUNDS()[S.round].questions[i][3]; return musicFiles[i] || (path?clipUrl(path):null); }
 
 /* ---------------- timer ---------------- */
 let tHandle=null, tEnd=0, tTotal=0, tLabel="", tFired=false;
@@ -251,29 +266,31 @@ async function openQuiz(id){
   }
 }
 function libQuiz(id){ return (LIB.quizzes||[]).find(q=>q.id===id); }
-function newQuiz(){ E={quiz:{id:null,title:"",jokers:true,rounds:[blankRound(1)]},dirty:false}; NAV={screen:"editor",quizId:null}; render(); }
-function editQuiz(id){ const q=libQuiz(id); if(!q) return; E={quiz:JSON.parse(JSON.stringify(q)),dirty:false}; NAV={screen:"editor",quizId:id}; render(); }
+function newQuiz(){ E=editorState({id:crypto.randomUUID(),title:"",jokers:true,rounds:[blankRound(1)]}); NAV={screen:"editor",quizId:null}; render(); }
+function editQuiz(id){ const q=libQuiz(id); if(!q) return; E=editorState(JSON.parse(JSON.stringify(q))); NAV={screen:"editor",quizId:id}; render(); }
 async function duplicateQuiz(id){
   const q=libQuiz(id); if(!q) return;
-  try{ if(await saveQuiz({id:null,title:q.title+" (copy)",jokers:q.jokers,rounds:q.rounds})) render(); }
+  // clips are shared with the original by path; removing the copy leaves them alone (see removeQuiz)
+  try{ if(await saveQuiz({id:crypto.randomUUID(),title:q.title+" (copy)",jokers:q.jokers,rounds:q.rounds})) render(); }
   catch(e){ alertErr(e); }
 }
 let delArmedId=null;
 async function removeQuiz(id,btn){
   if(delArmedId!==id){ delArmedId=id; btn.textContent="Delete?"; setTimeout(()=>{ if(delArmedId===id){ delArmedId=null; render(); } },3000); return; }
   delArmedId=null;
-  try{ if(await deleteQuiz(id)){ localStorage.removeItem(gameKey(id)); render(); } }
+  try{ if(await deleteQuiz(id)){ localStorage.removeItem(gameKey(id)); await deleteClips({prefix:id}); render(); } }
   catch(e){ alertErr(e); }
 }
 function alertErr(e){ const m=document.getElementById("modal");
   m.innerHTML=`<div class="overlay"><div class="card"><h2>Something went wrong</h2><div class="err">${esc(e.message||e)}</div><button style="margin-top:12px" onclick="document.getElementById('modal').innerHTML=''">Close</button></div></div>`; }
 
 /* ---------------- editor ---------------- */
+const editorState=quiz=>({quiz,dirty:false,pending:{},removed:[]}); // pending: "ri.qi" -> File to upload on save; removed: clip paths to delete on save
 const blankRound=n=>({name:`Round ${n}`,type:"normal",ptsPerQ:1,allOrNothing:false,questions:[["",""]]});
 function renderEditor(){
   const q=E.quiz;
   app.innerHTML=`<div class="topbar"><strong>🌴 ${q.id?"Edit quiz":"New quiz"}</strong><span style="flex:1"></span>
-      <button onclick="editorBack(this)">← Quizzes</button><button class="primary" id="savebtn" onclick="editorSave()" ${E.saving?"disabled":""}>${E.saving?"Saving…":"Save"}</button></div>
+      <button onclick="editorBack(this)">← Quizzes</button><button class="primary" onclick="editorSave()" ${E.saving?"disabled":""}>${E.saving||"Save"}</button></div>
     ${E.error?`<div class="card err">${esc(E.error)}</div>`:""}
     <div class="card">
       <div class="field"><label>Quiz title</label><input type="text" data-p="title" value="${esc(q.title)}" placeholder="e.g. Palm Spring Quiz Night 2027"></div>
@@ -289,27 +306,39 @@ function renderEditor(){
         <div class="field"><label>Points per question</label><input type="number" min="1" max="20" data-p="rounds.${ri}.ptsPerQ" value="${r.ptsPerQ}"></div>
         <label class="chk" style="margin-top:22px"><input type="checkbox" data-p="rounds.${ri}.allOrNothing" ${r.allOrNothing?"checked":""}> Something or Nothing (one wrong = 0)</label>
       </div>
-      <p class="muted" style="margin:4px 0 8px">${r.type==="music"?"Music: the question text is shown on screen (e.g. “Clip 3”); load clip files when you start the round.":r.type==="picture"?"Picture: no questions are read out — teams get a sheet and a 5-minute timer. Use the question field as the label (e.g. “Logo 4”).":"Normal: you read each question out; use “Multiple choice options” under a question to show A/B/C/D on screen."}</p>
+      <p class="muted" style="margin:4px 0 8px">${r.type==="music"?"Music: the question text is shown on screen (e.g. “Clip 3”). Upload a clip per question; trim it to the part you'll play.":r.type==="picture"?"Picture: no questions are read out — teams get a sheet and a 5-minute timer. Use the question field as the label (e.g. “Logo 4”).":"Normal: you read each question out; use “Multiple choice options” under a question to show A/B/C/D on screen."}</p>
       ${r.questions.map((qn,qi)=>questionEditorHTML(r,ri,qn,qi)).join("")}
       <button style="margin-top:8px" onclick="addQ(${ri})">+ Add question</button>
     </div>`).join("")}
-    <div class="card row spread"><button onclick="addRound()">+ Add round</button><button class="primary big" onclick="editorSave()" ${E.saving?"disabled":""}>Save quiz</button></div>`;
+    <div class="card row spread"><button onclick="addRound()">+ Add round</button><button class="primary big" onclick="editorSave()" ${E.saving?"disabled":""}>${E.saving||"Save quiz"}</button></div>`;
   app.querySelectorAll("textarea").forEach(autoGrow);
 }
-function questionEditorHTML(r,ri,[qq,aa,opts],qi){
+function questionEditorHTML(r,ri,[qq,aa,opts,clip],qi){
   const P=`rounds.${ri}.questions.${qi}`;
+  const pend=E.pending[`${ri}.${qi}`];
+  const clipHTML = r.type!=="music" ? "" : `<div class="optbtn clip">
+      ${pend ? `<span class="pill" style="background:#173226;color:var(--green)">${esc(pend.name)} — uploads on save</span>`
+        : clip ? `<audio controls preload="none" src="${clipUrl(clip)}" style="height:32px"></audio>` : `<span class="muted">No clip yet</span>`}
+      <label class="linkbtn" style="cursor:pointer">${clip||pend?"Replace clip":"+ Upload clip"}<input type="file" accept="audio/*" hidden onchange="stageClip(${ri},${qi},this.files[0])"></label>
+      ${clip||pend?`<button class="linkbtn" onclick="unstageClip(${ri},${qi})">remove</button>`:""}</div>`;
   const optsHTML = opts ? `<div class="opts">${opts.map((o,oi)=>`<label class="opt"><b>${LETTERS[oi]})</b><input type="text" data-p="${P}.2.${oi}" value="${esc(o)}" placeholder="Option ${LETTERS[oi]}"></label>`).join("")}</div>
       <div class="optbtn"><button class="linkbtn" onclick="addOpt(${ri},${qi})" ${opts.length>=LETTERS.length?"disabled":""}>+ option</button><button class="linkbtn" onclick="clearOpts(${ri},${qi})">remove options</button></div>`
     : `<div class="optbtn"><button class="linkbtn" onclick="addOpts(${ri},${qi})">+ Multiple choice options</button></div>`;
   return `<div class="q"><span class="n">${qi+1}</span>
     <textarea rows="1" data-p="${P}.0" placeholder="Question">${esc(qq)}</textarea>
     <span class="acts"><button class="mini" onclick="moveQ(${ri},${qi},-1)" ${qi===0?"disabled":""}>↑</button><button class="mini" onclick="moveQ(${ri},${qi},1)" ${qi===r.questions.length-1?"disabled":""}>↓</button><button class="mini" onclick="delQ(${ri},${qi})" ${r.questions.length===1?"disabled":""}>✕</button></span>
-    ${optsHTML}
+    ${clipHTML}${optsHTML}
     <textarea rows="1" class="a" data-p="${P}.1" placeholder="Answer">${esc(aa)}</textarea></div>`;
 }
+function stageClip(ri,qi,file){
+  if(!file) return;
+  if(file.size>CLIP_MAX_MB*1048576){ E.error=`${file.name} is over ${CLIP_MAX_MB} MB — trim it to the part you'll play.`; render(); return; }
+  E.pending[`${ri}.${qi}`]=file; E.dirty=true; render();
+}
+function unstageClip(ri,qi){ delete E.pending[`${ri}.${qi}`]; const q=E.quiz.rounds[ri].questions[qi]; if(q[3]){ E.removed.push(q[3]); q.length=q[2]?3:2; } E.dirty=true; render(); }
 function addOpts(ri,qi){ E.quiz.rounds[ri].questions[qi][2]=["","","",""]; E.dirty=true; render(); }
 function addOpt(ri,qi){ E.quiz.rounds[ri].questions[qi][2].push(""); E.dirty=true; render(); }
-function clearOpts(ri,qi){ E.quiz.rounds[ri].questions[qi].length=2; E.dirty=true; render(); }
+function clearOpts(ri,qi){ const q=E.quiz.rounds[ri].questions[qi]; if(q[3]) q[2]=null; else q.length=2; E.dirty=true; render(); }
 function autoGrow(t){ t.style.height="auto"; t.style.height=t.scrollHeight+"px"; }
 app.addEventListener("input",ev=>{
   const el=ev.target, p=el.dataset.p; if(!E||!p) return;
@@ -322,11 +351,12 @@ app.addEventListener("input",ev=>{
   if(k==="type") render();
 });
 function addRound(){ E.quiz.rounds.push(blankRound(E.quiz.rounds.length+1)); E.dirty=true; render(); }
-function delRound(i){ E.quiz.rounds.splice(i,1); E.dirty=true; render(); }
-function moveRound(i,d){ const r=E.quiz.rounds; [r[i],r[i+d]]=[r[i+d],r[i]]; E.dirty=true; render(); }
+function delRound(i){ E.quiz.rounds[i].questions.forEach(q=>{ if(q[3]) E.removed.push(q[3]); }); E.quiz.rounds.splice(i,1); remapPending(k=>{ const [ri,qi]=k.split(".").map(Number); return ri===i?null:ri>i?`${ri-1}.${qi}`:k; }); E.dirty=true; render(); }
+function moveRound(i,d){ const r=E.quiz.rounds; [r[i],r[i+d]]=[r[i+d],r[i]]; remapPending(k=>{ const [ri,qi]=k.split(".").map(Number); return ri===i?`${i+d}.${qi}`:ri===i+d?`${i}.${qi}`:k; }); E.dirty=true; render(); }
+function remapPending(f){ const out={}; for(const [k,v] of Object.entries(E.pending)){ const nk=f(k); if(nk) out[nk]=v; } E.pending=out; }
 function addQ(ri){ E.quiz.rounds[ri].questions.push(["",""]); E.dirty=true; render(); app.querySelectorAll(`[data-p^="rounds.${ri}.questions."]`)[ (E.quiz.rounds[ri].questions.length-1)*2 ]?.focus(); }
-function delQ(ri,qi){ E.quiz.rounds[ri].questions.splice(qi,1); E.dirty=true; render(); }
-function moveQ(ri,qi,d){ const q=E.quiz.rounds[ri].questions; [q[qi],q[qi+d]]=[q[qi+d],q[qi]]; E.dirty=true; render(); }
+function delQ(ri,qi){ const q=E.quiz.rounds[ri].questions; if(q[qi][3]) E.removed.push(q[qi][3]); q.splice(qi,1); remapPending(k=>{ const [r,i]=k.split(".").map(Number); return r!==ri?k:i===qi?null:i>qi?`${r}.${i-1}`:k; }); E.dirty=true; render(); }
+function moveQ(ri,qi,d){ const q=E.quiz.rounds[ri].questions; [q[qi],q[qi+d]]=[q[qi+d],q[qi]]; remapPending(k=>{ const [r,i]=k.split(".").map(Number); return r!==ri?k:i===qi?`${r}.${qi+d}`:i===qi+d?`${r}.${qi}`:k; }); E.dirty=true; render(); }
 let backArmed=false;
 function editorBack(btn){
   if(E.dirty && !backArmed){ backArmed=true; btn.textContent="Discard changes?"; btn.style.background="var(--red)"; setTimeout(()=>{backArmed=false; if(NAV.screen==="editor") render();},3000); return; }
@@ -344,12 +374,24 @@ function validateQuiz(q){
 async function editorSave(){
   const q=E.quiz; E.error=validateQuiz(q);
   if(E.error){ render(); return; }
-  q.title=q.title.trim(); q.rounds.forEach(r=>{ r.name=r.name.trim(); r.questions=r.questions.map(([a,b,o])=>o?[a.trim(),b.trim(),o.map(x=>x.trim())]:[a.trim(),b.trim()]); });
+  q.title=q.title.trim(); q.rounds.forEach(r=>{ r.name=r.name.trim(); r.questions=r.questions.map(([a,b,o,c])=>{ const out=[a.trim(),b.trim()]; if(o||c) out[2]=o?o.map(x=>x.trim()):null; if(c) out[3]=c; return out; }); });
   E.saving=true; render();
   try{
+    const jobs=Object.entries(E.pending);
+    for(const [i,[key,file]] of jobs.entries()){
+      E.saving=`Uploading clip ${i+1}/${jobs.length}…`; render();
+      const [ri,qi]=key.split(".").map(Number), qn=q.rounds[ri].questions[qi];
+      const ext=(file.name.match(/\.([a-z0-9]{1,5})$/i)||[,"mp3"])[1].toLowerCase();
+      const res=await uploadClip(`${q.id}/${crypto.randomUUID()}.${ext}`,file);
+      if(!res){ E.saving=false; render(); return; }   // password prompt cancelled
+      if(qn[3]) E.removed.push(qn[3]);
+      if(qn.length<3) qn[2]=null;
+      qn[3]=res.data.path; delete E.pending[key];
+    }
+    E.saving="Saving…"; render();
     const saved=await saveQuiz(q);
-    E.saving=false;
-    if(!saved){ render(); return; }   // password prompt cancelled
+    if(!saved){ E.saving=false; render(); return; }
+    for(const path of E.removed) await deleteClips({path});
     E=null; goLibrary();
   }catch(e){ E.saving=false; E.error="Save failed: "+(e.message||e); render(); }
 }
@@ -537,17 +579,13 @@ function answerListHTML(R){
 
 /* ---------------- music ---------------- */
 function musicLoaderHTML(R){
-  const n=R.questions.length, man=Object.keys(musicFiles).length;
-  const builtIn = QUIZ.id===SEED_QUIZ_ID && EMBEDDED_CLIPS.length;
+  const n=R.questions.length, have=R.questions.filter(q=>q[3]).length, man=Object.keys(musicFiles).length;
   return `<div class="card" style="text-align:left">
     <h2>Music clips</h2>
-    ${builtIn
-      ? `<div class="muted">All ${EMBEDDED_CLIPS.length} clips are built into the app ✓ (18 seconds each)${man?` — ${man} replaced manually this session`:""}</div>
-         <details style="margin-top:6px"><summary class="muted" style="cursor:pointer">Replace clips manually (optional)</summary>
-           <p class="muted">Select up to ${n} files; they're assigned to clips 1–${n} in file-name order, for this session only.</p>
-           <input type="file" accept="audio/*" multiple onchange="loadAllClips(this.files)"></details>`
-      : `<p class="muted">${man?`${man} of ${n} clips loaded for this session.`:`Load ${n} audio files (assigned to clips 1–${n} in file-name order). Clips aren't saved — load them each time you play.`}</p>
-         <input type="file" accept="audio/*" multiple onchange="loadAllClips(this.files)">`}
+    <div class="muted">${have===n?`All ${n} clips uploaded ✓`:`${have} of ${n} clips uploaded — add the rest in the editor, or load files below.`}${man?` — ${man} replaced from files this session`:""}</div>
+    <details style="margin-top:6px"><summary class="muted" style="cursor:pointer">Load clips from files (this session only)</summary>
+      <p class="muted">Select up to ${n} files; they're assigned to clips 1–${n} in file-name order.</p>
+      <input type="file" accept="audio/*" multiple onchange="loadAllClips(this.files)"></details>
   </div>`;
 }
 function loadAllClips(files){

@@ -1,0 +1,2 @@
+[functions.clip]
+verify_jwt = false
